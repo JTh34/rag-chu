@@ -1,6 +1,5 @@
 """
-Application FastAPI pour RAG CHU - Documents médicaux
-Version restructurée et modulaire
+Application FastAPI pour RAG CHU 
 """
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,15 +16,12 @@ import shutil
 from pydantic import BaseModel
 import logging
 
-# Imports locaux
 from config import settings
 from rag_service import rag_service
 
-# Configuration logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialisation FastAPI
 app = FastAPI(
     title=settings.app_title,
     description=settings.app_description,
@@ -33,7 +29,6 @@ app = FastAPI(
     debug=settings.debug
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Stockage en mémoire (à remplacer par une base de données en production)
+# Stockage en mémoire
 upload_directory = Path(settings.upload_dir)
 upload_directory.mkdir(exist_ok=True)
 documents_store: Dict[str, Dict[str, Any]] = {}
@@ -79,7 +74,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# Modèles Pydantic
+# Modèles Pydantic pour la structure des données
 class ChatRequest(BaseModel):
     question: str
     document_id: str = None
@@ -119,13 +114,13 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health_check():
     """Vérification de santé de l'API"""
     return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "version": settings.app_version,
-        "qdrant_status": "in-memory" if rag_service.qdrant_client else "disconnected",
-        "anthropic_configured": bool(settings.anthropic_api_key),
-        "openai_configured": bool(settings.openai_api_key),
-        "storage_mode": "RAM (in-memory)"
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "version": settings.app_version,
+            "qdrant_status": "in-memory" if rag_service.qdrant_client else "disconnected",
+            "anthropic_configured": bool(settings.anthropic_api_key),
+            "openai_configured": bool(settings.openai_api_key),
+            "storage_mode": "RAM (in-memory)"
     }
 
 @app.post("/api/upload", response_model=DocumentResponse)
@@ -157,28 +152,29 @@ async def upload_document(file: UploadFile = File(...)):
         
         # Stockage des métadonnées
         documents_store[document_id] = {
-            "document_id": document_id,
-            "filename": file.filename,
-            "file_path": str(file_path),
-            "status": "uploaded",
-            "upload_time": datetime.now().isoformat(),
-            "file_size": file.size
+                                        "document_id": document_id,
+                                        "filename": file.filename,
+                                        "file_path": str(file_path),
+                                        "status": "uploaded",
+                                        "upload_time": datetime.now().isoformat(),
+                                        "file_size": file.size
         }
         
         # Notification WebSocket
         await manager.send_message({
-            "type": "upload_success",
-            "message": f"Document uploadé: {file.filename}",
-            "document_id": document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "upload_success",
+                                    "message": f"Document uploadé: {file.filename}",
+                                    "document_id": document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                     }
+        )
         
         logger.info(f"Document uploadé: {file.filename} (ID: {document_id})")
         
         return DocumentResponse(
-            document_id=document_id,
-            filename=file.filename,
-            status="uploaded"
+                                document_id=document_id,
+                                filename=file.filename,
+                                status="uploaded"
         )
         
     except Exception as e:
@@ -198,11 +194,12 @@ async def analyze_document(document_id: str):
     try:
         # Notification début d'analyse
         await manager.send_message({
-            "type": "analysis_start",
-            "message": "Analyse visuelle en cours...",
-            "document_id": document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "analysis_start",
+                                    "message": "Analyse visuelle en cours...",
+                                    "document_id": document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         # Vérification des clés API
         if not settings.anthropic_api_key or not settings.openai_api_key:
@@ -214,43 +211,47 @@ async def analyze_document(document_id: str):
         # Callback de progression pour les messages WebSocket
         async def progress_callback(message: str, level: str = "info", details: dict = None):
             await manager.send_message({
-                "type": "debug",
-                "level": level,
-                "message": message,
-                "details": details,
-                "document_id": document_id,
-                "timestamp": datetime.now().strftime("%H:%M:%S")
-            })
-        
+                                        "type": "debug",
+                                        "level": level,
+                                        "message": message,
+                                        "details": details,
+                                        "document_id": document_id,
+                                        "timestamp": datetime.now().strftime("%H:%M:%S")
+                                        }
+            )
+                                
         # Traitement du document avec le service RAG
         result = await rag_service.process_document(file_path, document_id, progress_callback)
         
         # Création de la chaîne RAG
         await manager.send_message({
-            "type": "rag_creation",
-            "message": "Création de la chaîne RAG...",
-            "document_id": document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "rag_creation",
+                                    "message": "Création de la chaîne RAG...",
+                                    "document_id": document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         rag_chain = rag_service.create_rag_chain(result["collection_name"])
         rag_chains[document_id] = rag_chain
         
         # Mise à jour du document
         documents_store[document_id].update({
-            "status": "ready",
-            "collection_name": result["collection_name"],
-            "total_chunks": result["total_chunks"],
-            "analysis_time": datetime.now().isoformat()
-        })
+                                            "status": "ready",
+                                            "collection_name": result["collection_name"],
+                                            "total_chunks": result["total_chunks"],
+                                            "analysis_time": datetime.now().isoformat()
+                                            }
+        )
         
         # Notification succès
         await manager.send_message({
-            "type": "analysis_complete",
-            "message": f"Analyse terminée: {result['total_chunks']} sections analysées",
-            "document_id": document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "analysis_complete",
+                                    "message": f"Analyse terminée: {result['total_chunks']} sections analysées",
+                                    "document_id": document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         logger.info(f"Document {document_id} analysé avec succès")
         
@@ -267,11 +268,12 @@ async def analyze_document(document_id: str):
         
         # Notification erreur
         await manager.send_message({
-            "type": "error",
-            "message": f"ERREUR: {error_msg}",
-            "document_id": document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "error",
+                                    "message": f"ERREUR: {error_msg}",
+                                    "document_id": document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         # Mise à jour du statut
         documents_store[document_id]["status"] = "error"
@@ -298,12 +300,13 @@ async def chat_endpoint(request: ChatRequest):
     try:
         # Notification début de réponse
         await manager.send_message({
-            "type": "debug",
-            "level": "info",
-            "message": f"Recherche RAG pour: '{request.question[:50]}...'",
-            "document_id": request.document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "debug",
+                                    "level": "info",
+                                    "message": f"Recherche RAG pour: '{request.question[:50]}...'",
+                                    "document_id": request.document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         # Recherche des sources similaires AVANT génération
         collection_name = document["collection_name"]
@@ -315,71 +318,76 @@ async def chat_endpoint(request: ChatRequest):
         
         # Notification des chunks trouvés dans la console debug
         await manager.send_message({
-            "type": "debug",
-            "level": "rag",
-            "message": f"Chunks trouvés: {len(sources)}/{settings.retrieval_k} attendus",
-            "details": {
-                "query": request.question,
-                "collection": collection_name,
-                "chunks_found": len(sources),
-                "chunks_expected": settings.retrieval_k
-            },
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "debug",
+                                    "level": "rag",
+                                    "message": f"Chunks trouvés: {len(sources)}/{settings.retrieval_k} attendus",
+                                    "details": {
+                                                "query": request.question,
+                                                "collection": collection_name,
+                                                "chunks_found": len(sources),
+                                                "chunks_expected": settings.retrieval_k
+                                                },
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         # Détail de chaque chunk dans la console debug
         for i, source in enumerate(sources):
             await manager.send_message({
-                "type": "debug",
-                "level": "rag",
-                "message": f"Chunk {i+1}: Score {source['similarity_score']:.3f} | Page {source.get('metadata', {}).get('page', '?')}",
-                "details": {
-                    "chunk_index": i+1,
-                    "similarity_score": source['similarity_score'],
-                    "content_preview": source['content'][:100] + "..." if len(source['content']) > 100 else source['content'],
-                    "metadata": source.get('metadata', {})
-                },
-                "timestamp": datetime.now().strftime("%H:%M:%S")
-            })
+                                        "type": "debug",
+                                        "level": "rag",
+                                        "message": f"Chunk {i+1}: Score {source['similarity_score']:.3f} | Page {source.get('metadata', {}).get('page', '?')}",
+                                        "details": {
+                                            "chunk_index": i+1,
+                                            "similarity_score": source['similarity_score'],
+                                            "content_preview": source['content'][:100] + "..." if len(source['content']) > 100 else source['content'],
+                                            "metadata": source.get('metadata', {})
+                                        },
+                                        "timestamp": datetime.now().strftime("%H:%M:%S")
+                                        }
+            )
         
         # Génération de la réponse
         await manager.send_message({
-            "type": "debug",
-            "level": "info",
-            "message": "Génération de la réponse avec contexte RAG",
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "debug",
+                                    "level": "info",
+                                    "message": "Génération de la réponse avec contexte RAG",
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         rag_chain = rag_chains[request.document_id]
         response = rag_chain.invoke(request.question)
         
         # Notification réponse prête
         await manager.send_message({
-            "type": "debug",
-            "level": "success",
-            "message": f"Réponse générée ({len(response)} caractères)",
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "debug",
+                                    "level": "success",
+                                    "message": f"Réponse générée ({len(response)} caractères)",
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         logger.info(f"Réponse générée pour document {request.document_id}")
         
         # Retourner SANS les sources (elles sont dans la console debug)
         return ChatResponse(
-            response=response,
-            document_id=request.document_id,
-            sources=[]  # Vide pour ne pas les afficher dans le chat
-        )
+                            response=response,
+                            document_id=request.document_id,
+                            sources=[]
+                )
         
     except Exception as e:
         error_msg = f"Erreur génération réponse: {str(e)}"
         logger.error(error_msg)
         
         await manager.send_message({
-            "type": "error",
-            "message": f"❌ {error_msg}",
-            "document_id": request.document_id,
-            "timestamp": datetime.now().strftime("%H:%M:%S")
-        })
+                                    "type": "error",
+                                    "message": f"Erreur : {error_msg}",
+                                    "document_id": request.document_id,
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                    }
+        )
         
         raise HTTPException(status_code=500, detail=error_msg)
 
@@ -387,9 +395,9 @@ async def chat_endpoint(request: ChatRequest):
 async def list_documents():
     """Liste tous les documents uploadés"""
     return {
-        "documents": list(documents_store.values()),
-        "total": len(documents_store)
-    }
+            "documents": list(documents_store.values()),
+            "total": len(documents_store)
+            }
 
 @app.get("/api/documents/{document_id}")
 async def get_document(document_id: str):
@@ -438,48 +446,7 @@ async def delete_document(document_id: str):
         logger.error(f"Erreur suppression document {document_id}: {e}")
         raise HTTPException(status_code=500, detail="Erreur lors de la suppression")
 
-# Route pour servir une interface simple (optionnel)
-@app.get("/")
-async def serve_index():
-    """Page d'accueil simple"""
-    return HTMLResponse("""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>RAG CHU - API Médicale</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            .header { color: #2c3e50; }
-            .endpoint { background: #f8f9fa; padding: 15px; margin: 10px 0; border-radius: 5px; }
-        </style>
-    </head>
-    <body>
-        <h1 class="header">🏥 RAG CHU - API Documents Médicaux</h1>
-        <p>API pour l'analyse et la recherche dans les documents médicaux</p>
-        
-        <div class="endpoint">
-            <h3>📖 Documentation Interactive</h3>
-            <p><a href="/docs" target="_blank">Interface Swagger</a></p>
-        </div>
-        
-        <div class="endpoint">
-            <h3>🔍 Endpoints Principaux</h3>
-            <ul>
-                <li><code>POST /api/upload</code> - Upload document</li>
-                <li><code>POST /api/analyze/{id}</code> - Analyser document</li>
-                <li><code>POST /api/chat</code> - Chat avec RAG</li>
-                <li><code>GET /api/documents</code> - Lister documents</li>
-                <li><code>GET /api/health</code> - Statut API</li>
-            </ul>
-        </div>
-        
-        <div class="endpoint">
-            <h3>📡 WebSocket</h3>
-            <p><code>ws://localhost:8000/ws</code> - Notifications temps réel</p>
-        </div>
-    </body>
-    </html>
-    """)
+
 
 if __name__ == "__main__":
     import uvicorn

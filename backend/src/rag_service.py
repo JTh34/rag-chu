@@ -21,7 +21,7 @@ from vision_processor import IntelligentMedicalProcessor
 logger = logging.getLogger(__name__)
 
 class RAGService:
-    """Service principal pour les opérations RAG"""
+    """Service principal pour le RAG"""
     
     def __init__(self):
         self.qdrant_client = None
@@ -34,10 +34,11 @@ class RAGService:
         """Initialise les composants du service RAG"""
         # Client Qdrant en mode in-memory (RAM)
         self.qdrant_client = QdrantClient(":memory:")
-        logger.info("🧠 Qdrant initialisé en mode in-memory (RAM)")
+        logger.info("Qdrant initialisé dans la RAM")
         
-        # Embeddings OpenAI
+        
         if settings.openai_api_key:
+            # Embedding OpenAI
             self.embeddings = OpenAIEmbeddings(
                 model=settings.embedding_model,
                 api_key=settings.openai_api_key
@@ -118,7 +119,7 @@ class RAGService:
             if progress_callback:
                 await progress_callback("Démarrage de l'analyse visuelle avec Anthropic...", "vision")
             
-            # Traitement vision du document
+            # Analyse par LLM vision du document
             documents = await self.processor.process_medical_document(file_path, progress_callback)
             
             if not documents:
@@ -132,7 +133,6 @@ class RAGService:
             collection_name = f"medical_doc_{document_id}"
             self.ensure_collection(collection_name)
             
-            # Vectorisation et stockage via la méthode manuelle
             # Ajouter les documents un par un
             texts = [doc.page_content for doc in documents]
             metadatas = [doc.metadata for doc in documents]
@@ -143,7 +143,7 @@ class RAGService:
             # Générer les embeddings
             embeddings_vectors = self.embeddings.embed_documents(texts)
             
-            # Ajouter les points à Qdrant avec la structure correcte
+            # Ajouter les éléments à Qdrant avec la structure correcte
             points = []
             for i, (text, metadata, vector) in enumerate(zip(texts, metadatas, embeddings_vectors)):
                 points.append(PointStruct(
@@ -164,7 +164,7 @@ class RAGService:
             )
             
             if progress_callback:
-                await progress_callback("Vectorisation terminée avec succès!", "success")
+                await progress_callback("Vectorisation terminée avec succès.", "success")
             
             # Créer l'objet vectorstore pour compatibilité
             vectorstore = Qdrant(
@@ -211,30 +211,33 @@ class RAGService:
             # Template de prompt médical
             medical_prompt_template = """Tu es un expert médical spécialisé dans l'analyse de recommandations cliniques.
 
-Contexte médical:
-{context}
+                                        Contexte médical:
+                                        {context}
 
-Question: {question}
+                                        Question: {question}
 
-Instructions:
-1. Réponds uniquement en français
-2. Base ta réponse exclusivement sur le contexte fourni
-3. Cite les sections pertinentes quand possible
-4. Si une information n'est pas dans le contexte, indique-le clairement
-5. Pour les posologies, sois très précis
-6. Mentionne les contre-indications si pertinentes
+                                        Instructions:
+                                        1. Réponds uniquement en français
+                                        2. Base ta réponse exclusivement sur le contexte fourni
+                                        3. Cite les sections pertinentes quand cela est possible
+                                        4. Si une information n'est pas dans le contexte, indique-le clairement
+                                        5. Pour les posologies, sois très précis
+                                        6. Mentionne les contre-indications si elles existent
 
-Réponse:"""
-            
-            # Créer le prompt template
+                                        Réponse:"""
+                                                    
+            # Prompt template
             medical_prompt = PromptTemplate(
-                input_variables=["context", "question"],
-                template=medical_prompt_template
+                input_variables = ["context", "question"],
+                template = medical_prompt_template
             )
             
-            # Créer la chaîne RAG
+            # Chaîne RAG
             rag_chain = (
-                {"context": retriever | format_docs, "question": RunnablePassthrough()}
+                { 
+                    "context" : retriever | format_docs,
+                 "question": RunnablePassthrough()
+                }
                 | medical_prompt
                 | self.llm
                 | StrOutputParser()
@@ -263,12 +266,14 @@ Réponse:"""
             
             # Formatage des résultats
             formatted_results = []
+
             for doc, score in results:
-                formatted_results.append({
-                    "content": doc.page_content,
-                    "metadata": doc.metadata,
-                    "similarity_score": float(score)
-                })
+                formatted_results.append({  
+                                            "content": doc.page_content,
+                                            "metadata": doc.metadata,
+                                            "similarity_score": float(score) 
+                                        }
+                )
             
             return formatted_results
             
@@ -281,13 +286,13 @@ Réponse:"""
         try:
             info = self.qdrant_client.get_collection(collection_name)
             return {
-                "name": collection_name,
-                "vectors_count": info.vectors_count,
-                "status": info.status,
-                "config": {
-                    "distance": info.config.params.vectors.distance.value,
-                    "size": info.config.params.vectors.size
-                }
+                    "name": collection_name,
+                    "vectors_count": info.vectors_count,
+                    "status": info.status,
+                    "config": {
+                                "distance": info.config.params.vectors.distance.value,
+                                "size": info.config.params.vectors.size
+                            }
             }
         except Exception as e:
             logger.error(f"Erreur info collection {collection_name}: {e}")
@@ -303,5 +308,5 @@ Réponse:"""
             logger.error(f"Erreur suppression collection {collection_name}: {e}")
             return False
 
-# Instance globale du service RAG
+# Instance globale du  RAG
 rag_service = RAGService() 

@@ -1,7 +1,4 @@
-"""
-Processeur Vision Médical avec Claude - Version modulaire
-Module adapté pour l'architecture backend du projet RAG CHU
-"""
+
 import base64
 import io
 import json
@@ -21,7 +18,6 @@ from reportlab.lib.utils import simpleSplit
 
 from config import settings
 
-# Configuration du logging
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -30,10 +26,10 @@ class DocumentChunk:
     content: str
     metadata: Dict
     bbox: Tuple[int, int, int, int]  # Bounding box dans l'image
-    confidence: float
+    confidence: float # confiance dans l'analyse
 
 class VisualDocumentAnalyzer:
-    """Analyseur de documents basé sur la vision Claude"""
+    """Analyseur de documents basé sur Claude Vision"""
     
     def __init__(self, anthropic_api_key: Optional[str] = None):
         api_key = anthropic_api_key or settings.anthropic_api_key
@@ -58,20 +54,22 @@ class VisualDocumentAnalyzer:
         
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
+
             # Matrice de transformation pour haute résolution
-            mat = fitz.Matrix(dpi/72, dpi/72)
-            pix = page.get_pixmap(matrix=mat)
+            mat = fitz.Matrix(dpi/72, dpi/72) # Améliorer la résolution de l'image
+            pix = page.get_pixmap(matrix=mat) # Générer un pixmap
             
-            # Convertir en PIL Image
-            img_data = pix.tobytes("png")
-            img = Image.open(io.BytesIO(img_data))
-            images.append(img)
+            # Convertir en PIL
+            img_data = pix.tobytes("png") # Convertir en bytes
+            img = Image.open(io.BytesIO(img_data)) # Charger l'image dans PIL
+            images.append(img)  
             
         doc.close()
         return images
     
     def _docx_to_pdf(self, docx_path: str) -> str:
         """Convertit DOCX en PDF directement avec python-docx et reportlab"""
+
         logger.info("Conversion DOCX vers PDF avec python-docx")
         return self._extract_text_from_docx(docx_path)
     
@@ -80,14 +78,14 @@ class VisualDocumentAnalyzer:
  
         
         try:
-            # Extraire le texte du DOCX avec plus de structure
+            # Extraire le texte du DOCX 
             doc = DocxDocument(docx_path)
             text_content = []
             
             for paragraph in doc.paragraphs:
                 text = paragraph.text.strip()
                 if text:
-                    # Préserver la structure des titres (basé sur le style)
+                    # Préserver la structure des titres
                     if paragraph.style.name.startswith('Heading'):
                         text_content.append(f"\n*** {text} ***\n")
                     else:
@@ -102,7 +100,7 @@ class VisualDocumentAnalyzer:
                         text_content.append(row_text)
                 text_content.append("=== FIN TABLEAU ===\n")
             
-            # Créer un PDF temporaire avec le texte
+            # PDF temporaire avec le texte
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
                 pdf_path = tmp.name
                 
@@ -141,7 +139,7 @@ class VisualDocumentAnalyzer:
                     c.setFont("Helvetica", 10)
                     continue
                 
-                # Découper le texte automatiquement
+                # Découpe du texte automatiquement
                 lines = simpleSplit(paragraph, "Helvetica", 10, max_width)
                 
                 for line in lines:
@@ -156,7 +154,7 @@ class VisualDocumentAnalyzer:
                 y_position -= 8
                     
             c.save()
-            logger.info("PDF créé à partir du texte DOCX avec structure préservée")
+            logger.info("PDF créé à partir du texte DOCX ")
             return pdf_path
             
         except Exception as e:
@@ -179,68 +177,68 @@ class VisualDocumentAnalyzer:
     async def analyze_page_structure(self, image: Image.Image, page_num: int) -> Dict:
         """Analyse la structure d'une page avec Claude"""
         
-        # Convertir l'image en base64
+        # Conversion de l'image en base64
         buffered = io.BytesIO()
         image.save(buffered, format="PNG")
         img_b64 = base64.b64encode(buffered.getvalue()).decode()
         
-        # Prompt spécialisé pour documents médicaux
+        # Prompt spécialisé pour l'analyse de du document médical
         analysis_prompt = """
-        Analyse cette page de recommandations médicales et identifie précisément:
+                        Analyse cette page de recommandations médicales et identifie précisément:
 
-        1. **STRUCTURE HIERARCHIQUE**:
-           - Titre principal et sous-titres
-           - Sections (A, B, C, D, etc.)
-           - Numérotation et listes
+                        1. **STRUCTURE HIERARCHIQUE**:
+                        - Titre principal et sous-titres
+                        - Sections (A, B, C, D, etc.)
+                        - Numérotation et listes
 
-        2. **ELEMENTS STRUCTURELS**:
-           - Tableaux (posologies, critères, alternatives)
-           - Encadrés/points forts
-           - Listes à puces
-           - Paragraphes de texte continu
+                        2. **ELEMENTS STRUCTURELS**:
+                        - Tableaux (posologies, critères, alternatives)
+                        - Encadrés/points forts
+                        - Listes à puces
+                        - Paragraphes de texte continu
 
-        3. **CONTENU MEDICAL**:
-           - Noms de médicaments et posologies
-           - Critères cliniques (gravité, stabilité)
-           - Cas cliniques spécifiques
-           - Durées de traitement
+                        3. **CONTENU MEDICAL**:
+                        - Noms de médicaments et posologies
+                        - Critères cliniques (gravité, stabilité)
+                        - Cas cliniques spécifiques
+                        - Durées de traitement
 
-        4. **ZONES DE TEXTE** avec coordinates approximatives (x, y, largeur, hauteur en %)
+                        4. **ZONES DE TEXTE** avec coordinates approximatives (x, y, largeur, hauteur en %)
 
-        Retourne un JSON structuré avec:
-        ```json
-        {
-          "page_type": "guidelines|dosage_table|criteria_list",
-          "main_sections": [
-            {
-              "title": "titre section",
-              "type": "section|table|criteria|dosage|case_study",
-              "bbox_percent": [x, y, width, height],
-              "content_preview": "aperçu du contenu...",
-              "medical_entities": ["amoxicilline", "PAC grave", etc.],
-              "confidence": 0.0-1.0
-            }
-          ],
-          "tables": [
-            {
-              "title": "nom du tableau",
-              "type": "dosage|criteria|alternatives",
-              "bbox_percent": [x, y, width, height],
-              "columns": ["colonne1", "colonne2"],
-              "medical_focus": "antibiotiques|critères cliniques|durées"
-            }
-          ],
-          "key_medical_info": {
-            "medications": ["liste des médicaments"],
-            "dosages": ["posologies identifiées"],
-            "clinical_criteria": ["critères cliniques"],
-            "patient_types": ["PAC grave", "sans comorbidité", etc.]
-          }
-        }
-        ```
-        
-        Sois très précis sur les bounding boxes et identifie tous les éléments médicaux importants.
-        """
+                        Retourne un JSON structuré avec:
+                        ```json
+                        {
+                        "page_type": "guidelines|dosage_table|criteria_list",
+                        "main_sections": [
+                            {
+                            "title": "titre section",
+                            "type": "section|table|criteria|dosage|case_study",
+                            "bbox_percent": [x, y, width, height],
+                            "content_preview": "aperçu du contenu...",
+                            "medical_entities": ["amoxicilline", "PAC grave", etc.],
+                            "confidence": 0.0-1.0
+                            }
+                        ],
+                        "tables": [
+                            {
+                            "title": "nom du tableau",
+                            "type": "dosage|criteria|alternatives",
+                            "bbox_percent": [x, y, width, height],
+                            "columns": ["colonne1", "colonne2"],
+                            "medical_focus": "antibiotiques|critères cliniques|durées"
+                            }
+                        ],
+                        "key_medical_info": {
+                            "medications": ["liste des médicaments"],
+                            "dosages": ["posologies identifiées"],
+                            "clinical_criteria": ["critères cliniques"],
+                            "patient_types": ["PAC grave", "sans comorbidité", etc.]
+                        }
+                        }
+                        ```
+                        
+                        Sois très précis sur les bounding boxes et identifie tous les éléments médicaux importants.
+                        """
         
         try:
             import httpx
@@ -248,9 +246,9 @@ class VisualDocumentAnalyzer:
             
             # Utiliser httpx pour un appel asynchrone à Anthropic
             headers = {
-                "Content-Type": "application/json",
-                "x-api-key": self.client.api_key,
-                "anthropic-version": "2023-06-01"
+                        "Content-Type": "application/json",
+                        "x-api-key": self.client.api_key,
+                        "anthropic-version": "2023-06-01"
             }
             
             data = {
@@ -371,7 +369,7 @@ class IntelligentMedicalProcessor:
             analysis = await analyze_single_page(i, image)
             analysis_results.append(analysis)
         
-        # Créer les documents LangChain
+        # Conversion en documents LangChain
         if progress_callback:
             total_sections = sum(len(analysis.get('main_sections', [])) for analysis in analysis_results)
             await progress_callback(f"Création de {total_sections} chunks structurés...", "chunking")
