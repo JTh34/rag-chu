@@ -13,10 +13,20 @@ function App() {
 
   // Initialisation du WebSocket
   useEffect(() => {
-    const connectWebSocket = () => {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      // Frontend sur port 3000, backend sur port 8000
-      const wsUrl = `${protocol}//localhost:8000/ws`;
+      const connectWebSocket = () => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    
+    // Détection automatique de l'environnement
+    let wsUrl;
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      // Développement local : frontend port 3000, backend port 8000
+      wsUrl = `${protocol}//localhost:8000/ws`;
+    } else {
+      // Production (HF Spaces) : même domaine, port 7860
+      wsUrl = `${protocol}//${window.location.host}/ws`;
+    }
+    
+    console.log('Tentative de connexion WebSocket:', wsUrl);
       
       const websocket = new WebSocket(wsUrl);
       

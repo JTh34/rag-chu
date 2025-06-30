@@ -1,7 +1,3 @@
-"""
-Service RAG pour la gestion des documents médicaux
-Module centralisé pour les opérations de vectorisation et recherche
-"""
 import logging
 from typing import List, Dict, Any, Optional
 from pathlib import Path
@@ -15,8 +11,8 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.prompts import PromptTemplate
 from langchain.docstore.document import Document
 
-from config import settings
-from vision_processor import IntelligentMedicalProcessor
+from .config import settings
+from .vision_processor import IntelligentMedicalProcessor
 
 logger = logging.getLogger(__name__)
 

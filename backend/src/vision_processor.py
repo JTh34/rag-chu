@@ -16,7 +16,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import simpleSplit
 
-from config import settings
+from .config import settings
 
 logger = logging.getLogger(__name__)
 

@@ -16,8 +16,8 @@ import shutil
 from pydantic import BaseModel
 import logging
 
-from config import settings
-from rag_service import rag_service
+from .config import settings
+from .rag_service import rag_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,6 +73,40 @@ class ConnectionManager:
                 self.active_connections.remove(connection)
 
 manager = ConnectionManager()
+
+# Configuration des fichiers statiques pour servir le frontend React
+# Chemin vers le build du frontend (depuis le répertoire backend)
+frontend_build_path = Path(__file__).parent.parent.parent / "frontend" / "build"
+
+# Debug: afficher les chemins pour diagnostic
+logger.info(f"Chemin __file__: {__file__}")
+logger.info(f"Chemin calculé frontend: {frontend_build_path}")
+logger.info(f"Frontend build existe: {frontend_build_path.exists()}")
+
+# Essayer plusieurs chemins possibles
+possible_paths = [
+    frontend_build_path,  # /app/frontend/build
+    Path("/app/frontend/build"),  # Chemin absolu
+    Path(__file__).parent.parent / "frontend" / "build",  # depuis /app/backend/
+]
+
+frontend_build_path = None
+for path in possible_paths:
+    logger.info(f"Test chemin: {path} - Existe: {path.exists()}")
+    if path.exists():
+        frontend_build_path = path
+        break
+
+if frontend_build_path and frontend_build_path.exists():
+    # Servir les fichiers statiques du frontend
+    static_path = frontend_build_path / "static"
+    if static_path.exists():
+        app.mount("/static", StaticFiles(directory=static_path), name="static")
+        logger.info(f"✅ Frontend statique configuré: {frontend_build_path}")
+    else:
+        logger.warning(f"⚠️ Répertoire static introuvable: {static_path}")
+else:
+    logger.error(f"❌ Aucun répertoire frontend trouvé dans: {[str(p) for p in possible_paths]}")
 
 # Modèles Pydantic pour la structure des données
 class ChatRequest(BaseModel):
@@ -446,7 +480,53 @@ async def delete_document(document_id: str):
         logger.error(f"Erreur suppression document {document_id}: {e}")
         raise HTTPException(status_code=500, detail="Erreur lors de la suppression")
 
+# Routes pour servir le frontend React
+@app.get("/")
+async def serve_react_app():
+    """Servir l'application React"""
+    if frontend_build_path:
+        index_path = frontend_build_path / "index.html"
+        if index_path.exists():
+            return HTMLResponse(content=index_path.read_text(), status_code=200)
+    
+    # Fallback si pas de frontend
+    return HTMLResponse(f"""
+                                <!DOCTYPE html>
+                                <html>
+                                <head>
+                                    <title>RAG CHU - Erreur Frontend</title>
+                                    <style>
+                                        body { font-family: Arial, sans-serif; margin: 40px; background: #f8d7da; color: #721c24; }
+                                        .error { background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #dc3545; }
+                                    </style>
+                                </head>
+                                <body>
+                                    <div class="error">
+                                        <h1> Frontend React non trouvé</h1>
+                                        <p>Le frontend n'a pas été correctement buildé.</p>
+                                                                                 <p><strong>Chemin recherché:</strong> <code>{str(frontend_build_path)}</code></p>
+                                        <p><a href="/docs"> Documentation API</a></p>
+                                    </div>
+                                </body>
+                                </html>
+                                """
+                )
 
+# Catch-all pour les routes React (SPA routing)
+@app.get("/{path:path}")
+async def serve_spa(path: str):
+    """Servir l'application React pour toutes les routes non-API"""
+    # Exclure les routes API
+    if path.startswith("api/") or path.startswith("docs") or path.startswith("ws"):
+        raise HTTPException(status_code=404, detail="Route API non trouvée")
+    
+    # Servir index.html pour toutes les autres routes (SPA routing)
+    if frontend_build_path:
+        index_path = frontend_build_path / "index.html"
+        if index_path.exists():
+            return HTMLResponse(content=index_path.read_text(), status_code=200)
+    
+    raise HTTPException(status_code=404, detail="Frontend non disponible")
 
 if __name__ == "__main__":
     import uvicorn

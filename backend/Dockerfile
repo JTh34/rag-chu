@@ -1,53 +1,58 @@
 # Dockerfile pour le backend RAG CHU
 FROM python:3.11-slim
 
-# Métadonnées
-LABEL maintainer="CHU Developer <dev@chu.com>"
-LABEL description="Backend RAG pour documents médicaux CHU"
-
 # Variables d'environnement
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_NO_CACHE=1 \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
 
-# Installation des dépendances système
+# Installer les dépendances système
 RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
-    libmagic1 \
-    poppler-utils \
-    tesseract-ocr \
-    tesseract-ocr-fra \
-    libreoffice \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Installation d'uv
+# Installer uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
 
-# Répertoire de travail
+# Créer le répertoire de travail
 WORKDIR /app
 
-# Copier les fichiers de configuration
-COPY pyproject.toml uv.lock* ./
-COPY backend/pyproject.toml backend/uv.lock* ./backend/
+# Copier tout le backend en une fois
+COPY backend/ ./
 
-# Installation des dépendances
-RUN uv sync --frozen
+# Installer les dépendances Python
+RUN uv sync --frozen --no-dev && \
+    chmod -R 777 .venv
 
-# Copier le code source
-COPY backend/src ./backend/src
-COPY backend/.env.example ./backend/.env.example
+# Copier le frontend et le builder
+COPY frontend/ ./frontend/
 
-# Créer les répertoires nécessaires
-RUN mkdir -p uploads backend/static
+# Builder le frontend pendant le build Docker
+WORKDIR /app/frontend
+RUN npm install && npm run build
+
+# Se placer dans le répertoire backend pour l'exécution
+WORKDIR /app/backend
+
+# Créer les répertoires nécessaires et configurer les permissions
+RUN mkdir -p uploads static && \
+    chmod 777 /tmp && \
+    chmod -R 777 /app/.venv && \
+    chmod -R 777 /app
 
 # Exposer le port
-EXPOSE 8000
+EXPOSE 7860
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8000/api/health || exit 1
+    CMD curl -f http://localhost:7860/api/health || exit 1
 
-# Point d'entrée
-CMD ["uv", "run", "--directory", "backend", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+# Commande de démarrage avec --no-cache
+CMD ["uv", "run", "--no-cache", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "7860"] 
