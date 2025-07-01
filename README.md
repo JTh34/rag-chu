@@ -1,22 +1,3 @@
----
-title: RAG CHU - Documents Médicaux
-emoji: 🏥
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
-license: mit
-short_description: Application RAG pour l'analyse de documents médicaux avec IA
-tags:
-  - medical
-  - rag
-  - fastapi
-  - react
-  - document-analysis
-  - healthcare
----
-
 # RAG CHU - Application d'analyse de documents médicaux
 
 Application RAG (Retrieval-Augmented Generation) spécialisée dans l'analyse et l'interrogation de documents médicaux officiels, utilisant l'intelligence artificielle pour extraire et structurer l'information clinique.
