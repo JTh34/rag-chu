@@ -86,14 +86,24 @@ const DocumentList = ({
               }`}
               onClick={() => onDocumentSelected(doc)}
             >
-              <div className="document-name">
-                {doc.filename.length > 20 ? doc.filename.substring(0, 20) + '...' : doc.filename}
+              <div className="document-content">
+                <div className="document-name">
+                  {doc.filename.length > 20 ? doc.filename.substring(0, 20) + '...' : doc.filename}
+                </div>
+                
+                <div className="document-status">
+                  {getStatusLabel(doc.status)}
+                  {doc.total_chunks && ` • ${doc.total_chunks} chunks`}
+                </div>
               </div>
               
-              <div className="document-status">
-                {getStatusLabel(doc.status)}
-                {doc.total_chunks && ` • ${doc.total_chunks} chunks`}
-              </div>
+              <button 
+                className="delete-btn"
+                onClick={(e) => handleDelete(doc.document_id, e)}
+                title="Supprimer ce document"
+              >
+                🗑️
+              </button>
             </div>
           ))}
         </div>

@@ -152,6 +152,10 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .document-item:hover {
@@ -163,6 +167,11 @@ body {
   background: rgba(245, 158, 11, 0.2);
 }
 
+.document-content {
+  flex: 1;
+  min-width: 0;
+}
+
 .document-name {
   font-size: 0.85rem;
   font-weight: 600;
@@ -172,6 +181,28 @@ body {
 .document-status {
   font-size: 0.7rem;
   opacity: 0.8;
+}
+
+.delete-btn {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #ef4444;
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.delete-btn:hover {
+  background: rgba(239, 68, 68, 0.4);
+  border-color: rgba(239, 68, 68, 0.6);
+  transform: scale(1.05);
+}
+
+.delete-btn:active {
+  transform: scale(0.95);
 }
 
 /* Interface Chat (centre) */
@@ -561,4 +592,33 @@ body {
   .card h2 {
     font-size: 1rem;
   }
+}
+
+/* Animation pour le curseur de streaming */
+.streaming-cursor {
+  color: #10b981;
+  font-weight: bold;
+  animation: blink 1s infinite;
+  margin-left: 2px;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Spinner médical élégant */
+.medical-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.1);
+  border-left: 2px solid #10b981;
+  border-radius: 50%;
+  animation: medical-spin 1s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes medical-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 } 

@@ -17,8 +17,7 @@ from .vision_processor import IntelligentMedicalProcessor
 logger = logging.getLogger(__name__)
 
 class RAGService:
-    """Service principal pour le RAG"""
-    
+    """Service principal pour le RAG médical avec Qdrant et OpenAI"""
     def __init__(self):
         self.qdrant_client = None
         self.embeddings = None
@@ -27,27 +26,22 @@ class RAGService:
         self._initialize_components()
     
     def _initialize_components(self):
-        """Initialise les composants du service RAG"""
-        # Client Qdrant en mode in-memory (RAM)
+        """Initialise les composants Qdrant, OpenAI et Anthropic"""
         self.qdrant_client = QdrantClient(":memory:")
-        logger.info("Qdrant initialisé dans la RAM")
-        
         
         if settings.openai_api_key:
-            # Embedding OpenAI
             self.embeddings = OpenAIEmbeddings(
                 model=settings.embedding_model,
                 api_key=settings.openai_api_key
             )
             
-            # LLM pour les réponses
             self.llm = ChatOpenAI(
                 model=settings.openai_model,
                 temperature=0,
-                api_key=settings.openai_api_key
+                api_key=settings.openai_api_key,
+                streaming=True
             )
         
-        # Processeur de documents médicaux
         if settings.anthropic_api_key:
             self.processor = IntelligentMedicalProcessor(settings.anthropic_api_key)
     
@@ -61,30 +55,25 @@ class RAGService:
         }
         
         model = settings.embedding_model
-        dimension = model_dimensions.get(model, 1536)  # Défaut à 1536
-        logger.info(f"Modèle embedding: {model} (dimension: {dimension})")
+        dimension = model_dimensions.get(model, 1536)
         return dimension
     
     def ensure_collection(self, collection_name: str) -> bool:
-        """Assure que la collection existe dans Qdrant avec la bonne dimension"""
+        """Assure que la collection Qdrant existe avec la bonne dimension"""
         try:
             collections = self.qdrant_client.get_collections().collections
             exists = any(col.name == collection_name for col in collections)
             current_dimension = self._get_embedding_dimension()
             
             if exists:
-                # Vérifier si la dimension correspond
                 try:
                     collection_info = self.qdrant_client.get_collection(collection_name)
                     existing_dimension = collection_info.config.params.vectors.size
                     
                     if existing_dimension != current_dimension:
-                        logger.warning(f"Collection {collection_name} a une dimension incorrecte ({existing_dimension} vs {current_dimension}), suppression...")
                         self.qdrant_client.delete_collection(collection_name)
                         exists = False
-                except Exception as e:
-                    logger.warning(f"Erreur vérification dimension collection {collection_name}: {e}")
-                    # En cas d'erreur, recréer la collection
+                except Exception:
                     try:
                         self.qdrant_client.delete_collection(collection_name)
                     except:
@@ -96,7 +85,6 @@ class RAGService:
                     collection_name=collection_name,
                     vectors_config=VectorParams(size=current_dimension, distance=Distance.COSINE)
                 )
-                logger.info(f"Collection créée: {collection_name} (dim: {current_dimension})")
             
             return True
         except Exception as e:
@@ -104,7 +92,7 @@ class RAGService:
             return False
     
     async def process_document(self, file_path: str, document_id: str, progress_callback=None) -> Dict[str, Any]:
-        """Traite un document et le vectorise dans Qdrant"""
+        """Traite un document médical et le vectorise dans Qdrant"""
         if not self.processor:
             raise ValueError("Processeur médical non initialisé (clé Anthropic manquante)")
         
@@ -115,7 +103,6 @@ class RAGService:
             if progress_callback:
                 await progress_callback("Démarrage de l'analyse visuelle avec Anthropic...", "vision")
             
-            # Analyse par LLM vision du document
             documents = await self.processor.process_medical_document(file_path, progress_callback)
             
             if not documents:
@@ -125,23 +112,42 @@ class RAGService:
                 await progress_callback(f"Analyse terminée: {len(documents)} sections extraites", "success")
                 await progress_callback("Création de la collection vectorielle...", "chunking")
             
-            # Création de la collection
             collection_name = f"medical_doc_{document_id}"
             self.ensure_collection(collection_name)
             
-            # Ajouter les documents un par un
             texts = [doc.page_content for doc in documents]
             metadatas = [doc.metadata for doc in documents]
             
             if progress_callback:
                 await progress_callback(f"Génération des embeddings pour {len(texts)} chunks...", "chunking")
             
-            # Générer les embeddings
             embeddings_vectors = self.embeddings.embed_documents(texts)
             
-            # Ajouter les éléments à Qdrant avec la structure correcte
             points = []
             for i, (text, metadata, vector) in enumerate(zip(texts, metadatas, embeddings_vectors)):
+                # Debug: Afficher le contenu de chaque chunk
+                logger.info(f"CHUNK {i+1}/{len(texts)}:")
+                logger.info(f"Page: {metadata.get('page', 'N/A')}")
+                logger.info(f"Taille: {metadata.get('chunk_size', 'N/A')} caractères")
+                logger.info(f"Entités médicales: {metadata.get('medical_entities', [])}")
+                logger.info(f"Contenu (200 premiers chars): {text[:200]}{'...' if len(text) > 200 else ''}")
+                logger.info("   " + "="*80)
+                
+                # Envoyer les détails du chunk via WebSocket si callback disponible
+                if progress_callback:
+                    await progress_callback(
+                        f"📝 Chunk {i+1}/{len(texts)}: Page {metadata.get('page', 'N/A')}, {metadata.get('chunk_size', 'N/A')} chars",
+                        "chunking",
+                        {
+                            "chunk_index": i + 1,
+                            "total_chunks": len(texts),
+                            "page": metadata.get('page', 'N/A'),
+                            "chunk_size": metadata.get('chunk_size', 0),
+                            "medical_entities": metadata.get('medical_entities', []),
+                            "content_preview": text[:200] + "..." if len(text) > 200 else text
+                        }
+                    )
+                
                 points.append(PointStruct(
                     id=i,
                     vector=vector,
@@ -150,6 +156,8 @@ class RAGService:
                         "metadata": metadata
                     }
                 ))
+
+            logger.info(f"CHUNKING TERMINÉ: {len(points)} chunks créés au total")
             
             if progress_callback:
                 await progress_callback(f"Stockage dans Qdrant: {len(points)} vecteurs...", "chunking")
@@ -162,14 +170,11 @@ class RAGService:
             if progress_callback:
                 await progress_callback("Vectorisation terminée avec succès.", "success")
             
-            # Créer l'objet vectorstore pour compatibilité
             vectorstore = Qdrant(
                 client=self.qdrant_client,
                 collection_name=collection_name,
                 embeddings=self.embeddings,
             )
-            
-            logger.info(f"Document {document_id} vectorisé: {len(documents)} chunks")
             
             return {
                 "document_id": document_id,
@@ -184,12 +189,11 @@ class RAGService:
             raise
     
     def create_rag_chain(self, collection_name: str):
-        """Crée une chaîne RAG pour une collection donnée"""
+        """Crée une chaîne RAG médicale pour une collection donnée"""
         if not self.embeddings or not self.llm:
             raise ValueError("Composants RAG non initialisés")
         
         try:
-            # Créer le retriever
             vectorstore = Qdrant(
                 client=self.qdrant_client,
                 collection_name=collection_name,
@@ -200,35 +204,61 @@ class RAGService:
                 search_kwargs={"k": settings.retrieval_k}
             )
             
-            # Fonction pour formater les documents
             def format_docs(docs):
-                return "\n\n".join([doc.page_content for doc in docs])
+                logger.info("🔍 CHUNKS RÉCUPÉRÉS POUR LE RAG:")
+                logger.info("="*100)
+                
+                for i, doc in enumerate(docs):
+                    metadata = doc.metadata
+                    logger.info(f"CHUNK RÉCUPÉRÉ {i+1}/{len(docs)}:")
+                    logger.info(f"Page: {metadata.get('page', 'N/A')}")
+                    logger.info(f"Taille: {metadata.get('chunk_size', 'N/A')} caractères")
+                    logger.info(f"Entités médicales: {metadata.get('medical_entities', [])}")
+                    logger.info(f"Contenu (300 premiers chars): {doc.page_content[:300]}{'...' if len(doc.page_content) > 300 else ''}")
+                    logger.info("  " + "-"*80)
+                
+                context = "\n\n".join([doc.page_content for doc in docs])
+                logger.info(f"CONTEXTE FINAL: {len(context)} caractères total pour le LLM")
+                logger.info("="*100)
+                
+                return context
             
-            # Template de prompt médical
-            medical_prompt_template = """Tu es un expert médical spécialisé dans l'analyse de recommandations cliniques.
+            medical_prompt_template = """Tu es un assistant médical expert analysant des recommandations cliniques officielles.
 
-                                        Contexte médical:
+                                        CONTEXTE MÉDICAL :
                                         {context}
 
-                                        Question: {question}
+                                        QUESTION : {question}
 
-                                        Instructions:
-                                        1. Réponds uniquement en français
-                                        2. Base ta réponse exclusivement sur le contexte fourni
-                                        3. Cite les sections pertinentes quand cela est possible
-                                        4. Si une information n'est pas dans le contexte, indique-le clairement
-                                        5. Pour les posologies, sois très précis
-                                        6. Mentionne les contre-indications si elles existent
+                                        INSTRUCTIONS :
+                                        1. Si l'information nécessaire N'EST PAS dans le contexte, réponds exactement : "INFORMATION NON DISPONIBLE : Les éléments nécessaires pour répondre à cette question ne sont pas présents dans les documents fournis."
 
-                                        Réponse:"""
+                                        2. Si l'information EST présente, structure ta réponse ainsi :
+
+                                        RÉPONSE :
+                                        Donne une réponse directe et précise.
+
+                                        DÉTAILS CLINIQUES :
+                                        - Posologie/Critères : cite les valeurs exactes du document
+                                        - Situation clinique : précise le contexte d'application  
+                                        - Source : indique le tableau ou la section du document
+
+                                        PRÉCAUTIONS :
+                                        Mentionne les contre-indications ou limitations du contexte, ou indique "Aucune précaution spécifique mentionnée".
+
+                                        RÈGLES ABSOLUES :
+                                        - Cite uniquement les informations présentes dans le contexte
+                                        - Pour les posologies : valeurs exactes, pas d'approximation
+                                        - Ne jamais inventer ou extrapoler
+                                        - Distingue clairement les différentes situations cliniques (avec/sans comorbidité, grave/non grave)
+
+                                        RÉPONSE :"""
                                                     
-            # Prompt template
             medical_prompt = PromptTemplate(
                 input_variables = ["context", "question"],
                 template = medical_prompt_template
             )
             
-            # Chaîne RAG
             rag_chain = (
                 { 
                     "context" : retriever | format_docs,
@@ -246,30 +276,44 @@ class RAGService:
             raise
     
     def search_similar_documents(self, query: str, collection_name: str, limit: int = 5) -> List[Dict]:
-        """Recherche de documents similaires"""
+        """Recherche les documents les plus similaires à une requête"""
         if not self.embeddings:
             raise ValueError("Embeddings non initialisés")
         
         try:
+            logger.info(f"RECHERCHE DE SIMILARITÉ:")
+            logger.info(f"Requête: {query}")
+            logger.info(f"Collection: {collection_name}")
+            logger.info(f"Limite: {limit} chunks")
+            logger.info("="*100)
+            
             vectorstore = Qdrant(
                 client=self.qdrant_client,
                 collection_name=collection_name,
                 embeddings=self.embeddings,
             )
             
-            # Recherche de similarité
             results = vectorstore.similarity_search_with_score(query, k=limit)
             
-            # Formatage des résultats
+            logger.info(f"📋 RÉSULTATS DE RECHERCHE ({len(results)} chunks trouvés):")
+            
             formatted_results = []
-
-            for doc, score in results:
+            for i, (doc, score) in enumerate(results):
+                logger.info(f"RÉSULTAT {i+1}:")
+                logger.info(f"Score de similarité: {float(score):.4f}")
+                logger.info(f"Page: {doc.metadata.get('page', 'N/A')}")
+                logger.info(f"Entités: {doc.metadata.get('medical_entities', [])}")
+                logger.info(f"Contenu (200 chars): {doc.page_content[:200]}{'...' if len(doc.page_content) > 200 else ''}")
+                logger.info("      " + "-"*60)
+                
                 formatted_results.append({  
-                                            "content": doc.page_content,
-                                            "metadata": doc.metadata,
-                                            "similarity_score": float(score) 
-                                        }
-                )
+                    "content": doc.page_content,
+                    "metadata": doc.metadata,
+                    "similarity_score": float(score) 
+                })
+            
+            logger.info("RECHERCHE TERMINÉE")
+            logger.info("="*100)
             
             return formatted_results
             
@@ -278,31 +322,29 @@ class RAGService:
             return []
     
     def get_collection_info(self, collection_name: str) -> Dict[str, Any]:
-        """Récupère les informations sur une collection"""
+        """Récupère les informations détaillées d'une collection Qdrant"""
         try:
             info = self.qdrant_client.get_collection(collection_name)
             return {
-                    "name": collection_name,
-                    "vectors_count": info.vectors_count,
-                    "status": info.status,
-                    "config": {
-                                "distance": info.config.params.vectors.distance.value,
-                                "size": info.config.params.vectors.size
-                            }
+                "name": collection_name,
+                "vectors_count": info.vectors_count,
+                "status": info.status,
+                "config": {
+                    "distance": info.config.params.vectors.distance.value,
+                    "size": info.config.params.vectors.size
+                }
             }
         except Exception as e:
             logger.error(f"Erreur info collection {collection_name}: {e}")
             return {}
     
     def delete_collection(self, collection_name: str) -> bool:
-        """Supprime une collection"""
+        """Supprime définitivement une collection Qdrant"""
         try:
             self.qdrant_client.delete_collection(collection_name)
-            logger.info(f"Collection supprimée: {collection_name}")
             return True
         except Exception as e:
             logger.error(f"Erreur suppression collection {collection_name}: {e}")
             return False
 
-# Instance globale du  RAG
 rag_service = RAGService() 

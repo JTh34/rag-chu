@@ -1,14 +1,14 @@
-
 import base64
 import io
 import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
-import fitz  # PyMuPDF
+import fitz
 from PIL import Image
 import anthropic
 from langchain.docstore.document import Document as LangChainDocument
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from dataclasses import dataclass
 from docx import Document as DocxDocument
 import tempfile
@@ -22,25 +22,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DocumentChunk:
-    """Structure d'un chunk avec métadonnées enrichies"""
+    """Structure d'un chunk de document avec métadonnées enrichies"""
     content: str
     metadata: Dict
-    bbox: Tuple[int, int, int, int]  # Bounding box dans l'image
-    confidence: float # confiance dans l'analyse
+    bbox: Tuple[int, int, int, int]
+    confidence: float
 
 class VisualDocumentAnalyzer:
-    """Analyseur de documents basé sur Claude Vision"""
-    
+    """Analyseur de documents basé sur Claude Vision pour l'extraction de texte médical"""
     def __init__(self, anthropic_api_key: Optional[str] = None):
         api_key = anthropic_api_key or settings.anthropic_api_key
         if not api_key:
             raise ValueError("Clé API Anthropic requise")
             
         self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = settings.anthropic_model
+        self.model = "claude-3-haiku-20240307"
         
     def convert_doc_to_images(self, doc_path: str, dpi: int = 200) -> List[Image.Image]:
-        """Convertit un document en images haute résolution"""
+        """Convertit un document (PDF/DOCX) en images haute résolution"""
         
         # Si c'est un .docx, le convertir en PDF d'abord
         if doc_path.endswith('.docx'):
@@ -56,42 +55,34 @@ class VisualDocumentAnalyzer:
             page = doc.load_page(page_num)
 
             # Matrice de transformation pour haute résolution
-            mat = fitz.Matrix(dpi/72, dpi/72) # Améliorer la résolution de l'image
-            pix = page.get_pixmap(matrix=mat) # Générer un pixmap
+            mat = fitz.Matrix(dpi/72, dpi/72)
+            pix = page.get_pixmap(matrix=mat)
             
             # Convertir en PIL
-            img_data = pix.tobytes("png") # Convertir en bytes
-            img = Image.open(io.BytesIO(img_data)) # Charger l'image dans PIL
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data))
             images.append(img)  
             
         doc.close()
         return images
     
     def _docx_to_pdf(self, docx_path: str) -> str:
-        """Convertit DOCX en PDF directement avec python-docx et reportlab"""
-
-        logger.info("Conversion DOCX vers PDF avec python-docx")
+        """Convertit un fichier DOCX en PDF temporaire"""
         return self._extract_text_from_docx(docx_path)
     
     def _extract_text_from_docx(self, docx_path: str) -> str:
-        """Extrait le texte directement du DOCX et le sauve comme PDF temporaire"""
- 
-        
+        """Extrait le texte d'un DOCX et génère un PDF temporaire"""
         try:
-            # Extraire le texte du DOCX 
             doc = DocxDocument(docx_path)
             text_content = []
             
             for paragraph in doc.paragraphs:
                 text = paragraph.text.strip()
                 if text:
-                    # Préserver la structure des titres
                     if paragraph.style.name.startswith('Heading'):
                         text_content.append(f"\n*** {text} ***\n")
                     else:
                         text_content.append(text)
-            
-            # Traiter aussi les tableaux
             for table in doc.tables:
                 text_content.append("\n=== TABLEAU ===")
                 for row in table.rows:
@@ -99,15 +90,11 @@ class VisualDocumentAnalyzer:
                     if row_text:
                         text_content.append(row_text)
                 text_content.append("=== FIN TABLEAU ===\n")
-            
-            # PDF temporaire avec le texte
             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
                 pdf_path = tmp.name
                 
             c = canvas.Canvas(pdf_path, pagesize=letter)
             width, height = letter
-            
-            # Configuration de police
             c.setFont("Helvetica", 10)
             y_position = height - 50
             margin = 50
@@ -117,7 +104,6 @@ class VisualDocumentAnalyzer:
                 if not paragraph.strip():
                     continue
                     
-                # Gérer les titres
                 if paragraph.startswith("***") and paragraph.endswith("***"):
                     if y_position < 100:
                         c.showPage()
@@ -128,7 +114,6 @@ class VisualDocumentAnalyzer:
                     c.setFont("Helvetica", 10)
                     continue
                 
-                # Gérer les tableaux
                 if paragraph.startswith("==="):
                     if y_position < 50:
                         c.showPage()
@@ -139,7 +124,6 @@ class VisualDocumentAnalyzer:
                     c.setFont("Helvetica", 10)
                     continue
                 
-                # Découpe du texte automatiquement
                 lines = simpleSplit(paragraph, "Helvetica", 10, max_width)
                 
                 for line in lines:
@@ -150,16 +134,13 @@ class VisualDocumentAnalyzer:
                     c.drawString(margin, y_position, line)
                     y_position -= 12
                 
-                # Espace entre paragraphes
                 y_position -= 8
                     
             c.save()
-            logger.info("PDF créé à partir du texte DOCX ")
             return pdf_path
             
         except Exception as e:
             logger.error(f"Erreur extraction DOCX: {e}")
-            # En dernier recours, créer un PDF minimal
             try:
                 with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
                     pdf_path = tmp.name
@@ -168,92 +149,67 @@ class VisualDocumentAnalyzer:
                 c.drawString(50, 750, f"Document: {Path(docx_path).name}")
                 c.drawString(50, 730, "Erreur lors de l'extraction du contenu DOCX")
                 c.save()
-                logger.warning("PDF minimal créé en fallback")
                 return pdf_path
             except:
-                # Ultime fallback : retourner le fichier original
                 return docx_path
     
     async def analyze_page_structure(self, image: Image.Image, page_num: int) -> Dict:
-        """Analyse la structure d'une page avec Claude"""
-        
-        # Conversion de l'image en base64
+        """Analyse une page avec Claude Vision et extrait le texte complet"""
         buffered = io.BytesIO()
         image.save(buffered, format="PNG")
         img_b64 = base64.b64encode(buffered.getvalue()).decode()
-        
-        # Prompt spécialisé pour l'analyse de du document médical
         analysis_prompt = """
-                        Analyse cette page de recommandations médicales et identifie précisément:
+        Analyse cette page de document médical et EXTRAIT TOUT LE TEXTE VISIBLE.
 
-                        1. **STRUCTURE HIERARCHIQUE**:
-                        - Titre principal et sous-titres
-                        - Sections (A, B, C, D, etc.)
-                        - Numérotation et listes
+        Je veux deux choses :
 
-                        2. **ELEMENTS STRUCTURELS**:
-                        - Tableaux (posologies, critères, alternatives)
-                        - Encadrés/points forts
-                        - Listes à puces
-                        - Paragraphes de texte continu
+        1. **TEXTE COMPLET** : Reproduis fidèlement TOUT le texte visible sur l'image, 
+           en préservant la structure (titres, paragraphes, listes, tableaux).
 
-                        3. **CONTENU MEDICAL**:
-                        - Noms de médicaments et posologies
-                        - Critères cliniques (gravité, stabilité)
-                        - Cas cliniques spécifiques
-                        - Durées de traitement
+        2. **STRUCTURE** : Identifie les sections logiques pour le découpage.
 
-                        4. **ZONES DE TEXTE** avec coordinates approximatives (x, y, largeur, hauteur en %)
+        Retourne un JSON structuré :
+        ```json
+        {
+          "full_text": "TOUT LE TEXTE DE LA PAGE ICI, FORMATÉ AVEC DES RETOURS À LA LIGNE",
+          "page_type": "guidelines|dosage_table|criteria_list",
+          "sections": [
+            {
+              "title": "titre de la section",
+              "type": "section|table|criteria|dosage|case_study",
+              "text_content": "TEXTE COMPLET DE CETTE SECTION",
+              "start_char": 0,
+              "end_char": 150,
+              "medical_entities": ["amoxicilline", "PAC grave"],
+              "confidence": 0.9
+            }
+          ],
+          "key_medical_info": {
+            "medications": ["liste des médicaments"],
+            "dosages": ["posologies identifiées"],
+            "clinical_criteria": ["critères cliniques"],
+            "patient_types": ["PAC grave", "sans comorbidité"]
+          }
+        }
+        ```
 
-                        Retourne un JSON structuré avec:
-                        ```json
-                        {
-                        "page_type": "guidelines|dosage_table|criteria_list",
-                        "main_sections": [
-                            {
-                            "title": "titre section",
-                            "type": "section|table|criteria|dosage|case_study",
-                            "bbox_percent": [x, y, width, height],
-                            "content_preview": "aperçu du contenu...",
-                            "medical_entities": ["amoxicilline", "PAC grave", etc.],
-                            "confidence": 0.0-1.0
-                            }
-                        ],
-                        "tables": [
-                            {
-                            "title": "nom du tableau",
-                            "type": "dosage|criteria|alternatives",
-                            "bbox_percent": [x, y, width, height],
-                            "columns": ["colonne1", "colonne2"],
-                            "medical_focus": "antibiotiques|critères cliniques|durées"
-                            }
-                        ],
-                        "key_medical_info": {
-                            "medications": ["liste des médicaments"],
-                            "dosages": ["posologies identifiées"],
-                            "clinical_criteria": ["critères cliniques"],
-                            "patient_types": ["PAC grave", "sans comorbidité", etc.]
-                        }
-                        }
-                        ```
-                        
-                        Sois très précis sur les bounding boxes et identifie tous les éléments médicaux importants.
-                        """
+        IMPORTANT : Le champ "full_text" doit contenir TOUT le texte de la page, 
+        pas seulement un aperçu. Les sections doivent référencer des parties de ce texte complet.
+        """
         
         try:
             import httpx
             import asyncio
             
-            # Utiliser httpx pour un appel asynchrone à Anthropic
             headers = {
-                        "Content-Type": "application/json",
-                        "x-api-key": self.client.api_key,
-                        "anthropic-version": "2023-06-01"
+                "Content-Type": "application/json",
+                "x-api-key": self.client.api_key,
+                "anthropic-version": "2023-06-01"
             }
             
             data = {
                 "model": self.model,
-                "max_tokens": 2000,
+                "max_tokens": 4000,  # Augmenté pour plus de texte
                 "messages": [
                     {
                         "role": "user",
@@ -282,7 +238,6 @@ class VisualDocumentAnalyzer:
                     headers=headers
                 )
             
-            # Parser la réponse JSON
             if response.status_code == 200:
                 result = response.json()
                 response_text = result["content"][0]["text"]
@@ -306,12 +261,12 @@ class VisualDocumentAnalyzer:
             return self._fallback_analysis(page_num)
     
     def _fallback_analysis(self, page_num: int) -> Dict:
-        """Analyse de fallback en cas d'échec"""
+        """Retourne une analyse de fallback en cas d'échec de l'API Claude"""
         return {
+            "full_text": "",
             "page_type": "unknown",
             "page_number": page_num,
-            "main_sections": [],
-            "tables": [],
+            "sections": [],
             "key_medical_info": {
                 "medications": [],
                 "dosages": [],
@@ -321,16 +276,26 @@ class VisualDocumentAnalyzer:
         }
 
 class IntelligentMedicalProcessor:
-    """Processeur intelligent pour documents médicaux"""
-    
+    """Processeur intelligent pour documents médicaux avec chunking adaptatif"""
     def __init__(self, anthropic_api_key: Optional[str] = None):
         self.analyzer = VisualDocumentAnalyzer(anthropic_api_key)
         
-    async def process_medical_document(self, doc_path: str, progress_callback=None) -> List[LangChainDocument]:
-        """Traite un document médical et retourne des chunks enrichis"""
-        logger.info(f"Traitement du document: {doc_path}")
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=100,
+            separators=[
+                "\n\n*** ",
+                "\n\n",
+                "\n=== ",
+                "\n• ",
+                "\n- ",
+                ". ",
+                " "
+            ]
+        )
         
-        # Convertir en images
+    async def process_medical_document(self, doc_path: str, progress_callback=None) -> List[LangChainDocument]:
+        """Traite un document médical et retourne des chunks LangChain enrichis"""
         if progress_callback:
             await progress_callback(f"Conversion du document en images...", "vision")
         
@@ -339,65 +304,110 @@ class IntelligentMedicalProcessor:
         if progress_callback:
             await progress_callback(f"Document converti: {len(images)} pages à analyser", "vision")
         
-        # Analyser chaque page avec streaming temps réel
-        import asyncio
-        analysis_results = []
+        all_text_content = []
+        page_analyses = []
         
-        async def analyze_single_page(i, image):
+        for i, image in enumerate(images):
             if progress_callback:
-                await progress_callback(f"Analyse de la page {i+1}/{len(images)} avec Anthropic Claude...", "vision")
+                await progress_callback(f"Extraction texte complet page {i+1}/{len(images)}...", "vision")
             
             analysis = await self.analyzer.analyze_page_structure(image, i)
+            page_analyses.append(analysis)
+            
+            full_text = analysis.get('full_text', '')
+            if full_text.strip():
+                page_header = f"\n\n=== PAGE {i+1} ===\n"
+                all_text_content.append(page_header + full_text)
             
             if progress_callback:
-                sections_found = len(analysis.get('main_sections', []))
-                tables_found = len(analysis.get('tables', []))
+                text_length = len(full_text)
+                sections_found = len(analysis.get('sections', []))
                 await progress_callback(
-                    f"Page {i+1} analysée: {sections_found} sections, {tables_found} tableaux", 
-                    "success",
-                    {
-                        "page": i+1,
-                        "sections": sections_found,
-                        "tables": tables_found,
-                        "page_type": analysis.get('page_type', 'unknown')
-                    }
+                    f"Page {i+1}: {text_length} caractères, {sections_found} sections", 
+                    "success"
                 )
-            return analysis
         
-        # Traiter les pages une par une pour le streaming
-        for i, image in enumerate(images):
-            analysis = await analyze_single_page(i, image)
-            analysis_results.append(analysis)
+        complete_document_text = "\n".join(all_text_content)
         
-        # Conversion en documents LangChain
         if progress_callback:
-            total_sections = sum(len(analysis.get('main_sections', [])) for analysis in analysis_results)
-            await progress_callback(f"Création de {total_sections} chunks structurés...", "chunking")
+            await progress_callback(f"Texte total extrait: {len(complete_document_text)} caractères", "success")
+            await progress_callback("Découpage intelligent en chunks...", "chunking")
+        
+        # Debug: Afficher le contenu total extrait
+        logger.info("EXTRACTION DOCUMENTAIRE TERMINÉE:")
+        logger.info("="*100)
+        logger.info(f"   Nombre de pages analysées: {len(images)}")
+        logger.info(f"   Texte total extrait: {len(complete_document_text)} caractères")
+        logger.info(f"   Aperçu du texte (500 premiers chars): {complete_document_text[:500]}{'...' if len(complete_document_text) > 500 else ''}")
+        logger.info("="*100)
+        
+        text_chunks = self.text_splitter.split_text(complete_document_text)
+        
+        logger.info("DÉCOUPAGE EN CHUNKS:")
+        logger.info("="*100)
+        logger.info(f"   Nombre de chunks créés: {len(text_chunks)}")
+        logger.info(f"   Taille chunks: {settings.chunk_size} caractères")
+        logger.info(f"   Chevauchement: {settings.chunk_overlap} caractères")
+        logger.info("="*100)
         
         documents = []
-        for i, analysis in enumerate(analysis_results):
-            # Créer un document par section principale
-            for section in analysis.get('main_sections', []):
-                metadata = {
-                    'source': doc_path,
-                    'page': i,
-                    'section_title': section.get('title', ''),
-                    'section_type': section.get('type', 'unknown'),
-                    'medical_entities': section.get('medical_entities', []),
-                    'confidence': section.get('confidence', 0.0),
-                    'bbox': section.get('bbox_percent', []),
-                    'key_medical_info': analysis.get('key_medical_info', {})
-                }
-                
-                document = LangChainDocument(
-                    page_content=section.get('content_preview', ''),
-                    metadata=metadata
-                )
-                documents.append(document)
+        for chunk_idx, chunk_text in enumerate(text_chunks):
+            page_num = self._find_page_for_chunk(chunk_text, page_analyses)
+            medical_entities = self._extract_medical_entities_from_chunk(chunk_text, page_analyses)
+            
+            # Debug: Afficher chaque chunk créé
+            logger.info(f"CHUNK VISION {chunk_idx+1}/{len(text_chunks)}:")
+            logger.info(f"   Page source: {page_num}")
+            logger.info(f"   Taille: {len(chunk_text)} caractères")
+            logger.info(f"   Entités médicales: {medical_entities}")
+            logger.info(f"   Contenu (200 premiers chars): {chunk_text[:200]}{'...' if len(chunk_text) > 200 else ''}")
+            logger.info("   " + "-"*80)
+            
+            metadata = {
+                'source': doc_path,
+                'chunk_id': chunk_idx,
+                'page': page_num,
+                'chunk_size': len(chunk_text),
+                'medical_entities': medical_entities,
+                'document_type': 'medical_guidelines',
+                'extraction_method': 'claude_vision_ocr',
+                'total_chunks': len(text_chunks)
+            }
+            
+            document = LangChainDocument(
+                page_content=chunk_text,
+                metadata=metadata
+            )
+            documents.append(document)
         
-        logger.info(f"Document traité: {len(documents)} sections extraites")
+        logger.info(f"CRÉATION CHUNKS VISION TERMINÉE: {len(documents)} documents LangChain créés")
+        logger.info("="*100)
+        
+        if progress_callback:
+            await progress_callback(f"{len(documents)} chunks créés", "success")
+        
         return documents
+    
+    def _find_page_for_chunk(self, chunk_text: str, page_analyses: List[Dict]) -> int:
+        """Trouve la page source d'un chunk de texte"""
+        for analysis in page_analyses:
+            if analysis.get('full_text', '') in chunk_text or chunk_text in analysis.get('full_text', ''):
+                return analysis.get('page_number', 0)
+        return 0
+    
+    def _extract_medical_entities_from_chunk(self, chunk_text: str, page_analyses: List[Dict]) -> List[str]:
+        """Extrait les entités médicales pertinentes pour un chunk donné"""
+        entities = set()
+        
+        for analysis in page_analyses:
+            medical_info = analysis.get('key_medical_info', {})
+            for entity_type in ['medications', 'dosages', 'clinical_criteria', 'patient_types']:
+                for entity in medical_info.get(entity_type, []):
+                    if entity.lower() in chunk_text.lower():
+                        entities.add(entity)
+        
+        return list(entities)
 
 def create_medical_processor(anthropic_api_key: Optional[str] = None) -> IntelligentMedicalProcessor:
-    """Factory function pour créer un processeur médical"""
-    return IntelligentMedicalProcessor(anthropic_api_key) 
+    """Factory pour créer un processeur médical intelligent"""
+    return IntelligentMedicalProcessor(anthropic_api_key)
