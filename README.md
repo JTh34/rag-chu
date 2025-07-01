@@ -1,5 +1,3 @@
-# RAG CHU - Application d'analyse de documents médicaux
-
 ---
 title: RAG CHU - Documents Médicaux
 emoji: 🏥
