@@ -17,6 +17,9 @@ tags:
   - healthcare
 ---
 
+
+#  RAG CHU - Assistant Médical IA
+
 Application RAG (Retrieval-Augmented Generation) spécialisée dans l'analyse et l'interrogation de documents médicaux officiels, utilisant l'intelligence artificielle pour extraire et structurer l'information clinique.
 
 ### Liens du projet : 
